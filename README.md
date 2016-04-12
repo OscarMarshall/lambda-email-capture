@@ -42,6 +42,7 @@ required on the resource.
 }
 ```
 
+The referenced stage variables will also need to be filled in.
 
 ## Deploying
 
