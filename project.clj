@@ -60,4 +60,5 @@
                             :language-in :ecmascript5
                             :main        lambda-email-capture.test-runner}}]}
 
-  :doo {:build "test"})
+  :doo
+  {:build "test"})
