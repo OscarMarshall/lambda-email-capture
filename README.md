@@ -23,8 +23,9 @@ up.
 ### AWS API Gateway
 
 If this Lambda function is being set up to capture emails sent in POST requests
-with the body matching `{"email": "..."}`, then the following template is
-required on the resource.
+with the body matching `{"email": "..."}`, then a Resource needs to be created
+with a POST Method that invokes the Lambda function with the following Mapping
+Template.
 
 #### Request Body Mapping Template
 
