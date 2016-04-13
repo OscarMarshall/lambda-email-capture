@@ -6,9 +6,9 @@
   (:require [cljs-lambda.macros :refer-macros [deflambda]]
             [cljs.core.async :as a]
             [cljs.core.async.impl.protocols :as ap]
+            [clojure.string :as string]
             [datomic-cljs.api :as d]
-            [schema.core :as s :include-macros true]
-            [clojure.string :as string])
+            [schema.core :as s :include-macros true])
   (:require-macros [cljs.core.async.macros :refer [go]]))
 
 ;; # Schemas
