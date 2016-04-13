@@ -29,7 +29,7 @@ Template.
 
 #### Request Body Mapping Template
 
-* application/json
+##### application/json
 
 ```javascript
 {
