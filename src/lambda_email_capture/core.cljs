@@ -14,23 +14,47 @@
 ;; # Schemas
 
 (def ReadPort (s/protocol ap/ReadPort))
-(def Handler (s/=> {s/Keyword s/Any} ReadPort))
+(def Handler (s/=> ReadPort {s/Keyword s/Any}))
+(def EmailCaptureEvent {:body    {:email s/Str}
+                        :datomic {:hostname s/Str
+                                  :port     s/Num
+                                  :alias    s/Str
+                                  :database s/Str}})
 
-;; # Middleware
+;; # Pre Middleware
 
-;; The first thing we need to do with a request is to create a Datomic
-;; connection using the given connection parameters.
+;; ## Schema Validate
 ;;
-(s/defn wrap-datomic-connection :- Handler [handler :- Handler]
+;; Before we start doing anything with a request, we need to make sure that it
+;; follows the EmailCaptureEvent schema.
+;;
+(s/defn wrap-schema-validate :- Handler
+  "Middleware that validates the request follows schema"
+  [handler :- Handler, schema :- s/Any]
+  (s/fn :- ReadPort [request :- ReadPort]
+    (go (let [request (a/<! request)]
+          (try (s/validate schema request)
+               (a/<! (handler (go request)))
+               (catch js/Error e
+                 e))))))
+
+;; ## Datomic Connection
+;;
+;; The next thing we need to do with a request is to create a Datomic connection
+;; using the given connection parameters.
+;;
+(s/defn wrap-datomic-connection :- Handler
   "Middleware to add a DatomicConnection to the request"
-  (s/fn :- ReadPort [request :- {:datomic  {:hostname s/Str
-                                            :port     s/Num
-                                            :alias    s/Str
-                                            :database s/Str}
-                                 s/Keyword s/Any}]
-    (handler (let [{{:keys [hostname port alias database]} :datomic} request
-                   connection (d/connect hostname port alias database)]
-               (assoc request :datomic-connection connection)))))
+  [handler :- Handler]
+  (s/fn :- ReadPort [request :- ReadPort]
+    (go (let [{{:keys [hostname port alias database]} :datomic
+               :as                                    request}
+              (a/<! request)]
+          (a/<! (handler (go (assoc request
+                               :datomic-connection (d/connect hostname
+                                                              port
+                                                              alias
+                                                              database)))))))))
 
 ;; # Endpoint
 ;;
@@ -39,26 +63,44 @@
 ;;
 (s/defn email-capture-endpoint :- ReadPort
   "Endpoint which adds :body as a capture to :datomic-connection"
-  [{{:keys [email]} :body
-    :keys           [datomic-connection]}
-   :- {:body               {:email s/Str, s/Keyword s/Any}
-       :datomic-connection d/DatomicConnection
-       s/Keyword           s/Any}]
-  (go (a/<! (d/transact datomic-connection
-                        [{:db/id         (d/tempid :db.part/user)
-                          :capture/email (-> email
-                                             string/lower-case
-                                             string/trim)}]))))
+  [request :- ReadPort]
+  (go (let [{{:keys [email]} :body
+             :keys           [datomic-connection]}
+            (a/<! request)]
+        (a/<! (d/transact datomic-connection
+                          [{:db/id         (d/tempid :db.part/user)
+                            :capture/email (-> email
+                                               string/lower-case
+                                               string/trim)}])))))
+
+;; # Post Middleware
+
+;; ## Acknowledge
+;;
+;; Lastly, if everything went smoothly -- a.k.a. we didn't get a js/Error --
+;; then send back "acknowledged". Otherwise, pass along the error.
+;;
+(s/defn wrap-acknowledge :- Handler
+  "Returns \"acknowledge\" or passes on returned value if it's an error"
+  [handler :- Handler]
+  (s/fn :- ReadPort [request :- ReadPort]
+    (go (let [result (a/<! (handler request))]
+          (if (instance? js/Error result)
+            result
+            "acknowledged")))))
 
 ;; # Handler
 ;;
 ;; We package up our endpoint and middleware up into a nice handler that we'll
 ;; call from our Lambda definition.
 ;;
-(def email-capture-handler (-> email-capture-endpoint wrap-datomic-connection))
+(def email-capture-handler (-> email-capture-endpoint
+                               wrap-acknowledge
+                               wrap-datomic-connection
+                               (wrap-schema-validate EmailCaptureEvent)))
 
 ;; # AWS Lambda Definition
-
+;;
 ;; ## Input
 ;;
 ;; Inputs to AWS Lambda functions come in the form of two parameters, the event
@@ -67,27 +109,19 @@
 ;; the need to interact with these callbacks and because we are only interested
 ;; in the event, we can ignore the context.
 ;;
-;; The event must conform to the Event schema. The value at `[:body :email]` is
-;; what gets recorded in the capture and the `:datomic` map describes the
-;; Datomic database where the capture should be recorded.
+;; The event must conform to the EmailCaptureEvent schema. The value at
+;; `[:body :email]` is what gets recorded in the capture and the `:datomic` map
+;; describes the Datomic database where the capture should be recorded.
 ;;
 ;; ## Output
 ;;
 ;; If the function executes correctly, it will return the string
 ;; `"acknowledged"`. Otherwise, it will return an `Error` instance.
 ;;
-(def Event {:body    {:email s/Str}
-            :datomic {:hostname s/Str
-                      :port     s/Num
-                      :alias    s/Str
-                      :database s/Str}})
-(deflambda email-capture-lambda [event _]
+(deflambda email-capture-lambda
   "Lambda which adds email captures to a Datomic database"
-  (try (s/validate Event event)
-       (let [result (email-capture-handler event)]
-         (if (instance? js/Error result) result "acknowledged"))
-       (catch js/Error e
-         e)))
+  [event _]
+  (email-capture-handler (go event)))
 
 ;; # Miscellaneous
 
